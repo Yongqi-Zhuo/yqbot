@@ -36,6 +36,10 @@ object Yqbot : KotlinPlugin(
             SglManager.load()
             AbstractPermitteeId.AnyUser.permit(SglCommand.permission)
         }
+        if(YqConfig.repeater) {
+            Repeater.load()
+            AbstractPermitteeId.AnyUser.permit(RepeaterCommand.permission)
+        }
         logger.info { "Loaded yqbot." }
     }
 
@@ -46,10 +50,14 @@ object Yqbot : KotlinPlugin(
         if(YqConfig.sgl) {
             SglManager.unload()
         }
+        if(YqConfig.repeater) {
+            Repeater.unload()
+        }
     }
 }
 
 object YqConfig: AutoSavePluginConfig("yqconfig") {
     val sgl: Boolean by value(true)
     val goshujin: Boolean by value(true)
+    val repeater: Boolean by value(true)
 }

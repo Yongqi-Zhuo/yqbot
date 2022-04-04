@@ -9,6 +9,7 @@ import net.mamoe.mirai.console.data.AutoSavePluginData
 import net.mamoe.mirai.console.data.value
 import net.mamoe.mirai.console.permission.PermissionService.Companion.hasPermission
 import net.mamoe.mirai.contact.AnonymousMember
+import net.mamoe.mirai.contact.isOperator
 import net.mamoe.mirai.contact.nameCardOrNick
 import net.mamoe.mirai.event.GlobalEventChannel
 import net.mamoe.mirai.event.events.GroupMessageEvent
@@ -79,6 +80,7 @@ object SglManager {
             val forwardFlag = message[ForwardMessage] != null
             val messageChains: List<MessageChain> =
                 message[ForwardMessage]?.nodeList?.map { it.messageChain } ?: listOf(message)
+            val thisSender = ImageSender(if (sender is AnonymousMember) ImageSender.anonymousID else sender.id, time)
             messageChains.forEach { chain ->
                 chain.forEach chainForeach@{
                     if ((it !is Image) || it.isEmoji) return@chainForeach
@@ -93,6 +95,9 @@ object SglManager {
                             // sgl
                             Yqbot.logger.debug("Matched. Distance: ${SglDatabase.hash(group.id, q) distance hash}")
                             val isender = SglDatabase.sender(group.id, q)
+                            if(isender == thisSender) {
+                                return@chainForeach
+                            }
                             if (collector[isender] == null) collector[isender] = mutableListOf()
                             collector[isender]!!.add(imgCnt)
                             repeated.add(it)
@@ -108,13 +113,7 @@ object SglManager {
                             toBeIgnored[group.id]!![imgCnt] = q
                         } else {
                             // 没sg
-                            SglDatabase.addRecord(
-                                group.id, hash,
-                                ImageSender(
-                                    if (sender is AnonymousMember) ImageSender.anonymousID else sender.id,
-                                    time
-                                )
-                            )
+                            SglDatabase.addRecord(group.id, hash, thisSender)
                         }
                     } catch (e: IOException) {
                         Yqbot.logger.warning("Failed to download image. Reason: ${e.message}")
@@ -221,11 +220,12 @@ object SglCommand : CompositeCommand(
     suspend fun CommandSender.help() {
         sendMessage(
             """这是yqbot的模块sgl。
-            |/sgl on 开启sgl\n/sgl off关闭sgl
-            |/sgl shutup在群内禁用sgl
-            |/sgl resume在群内启用sgl
-            |/sgl ignore屏蔽一张图的sgl
-            |/sgl threshold调整图片相似阈值（0~7），表示识别容错率，越高越容易sgl。""".trimMargin()
+            |/sgl on 开启sgl
+            |/sgl off 关闭sgl
+            |/sgl shutup 在群内禁用sgl
+            |/sgl resume 在群内启用sgl
+            |/sgl ignore 屏蔽一张图的sgl
+            |/sgl threshold 调整图片相似阈值（0~7），表示识别容错率，越高越容易sgl""".trimMargin()
         )
     }
 
@@ -267,6 +267,13 @@ object SglCommand : CompositeCommand(
             sendMessage("不再对这张图片sgl。")
         } else {
             sendMessage("找不到要忽略的图片。")
+        }
+    }
+
+    @SubCommand
+    suspend fun MemberCommandSender.manual() {
+        if (user.isOperator()) {
+            sendMessage("水过啦！")
         }
     }
 
