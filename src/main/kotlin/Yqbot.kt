@@ -40,6 +40,12 @@ object Yqbot : KotlinPlugin(
             Repeater.load()
             AbstractPermitteeId.AnyUser.permit(RepeaterCommand.permission)
         }
+        if(YqConfig.chatbot) {
+            Chatbot.load()
+        }
+        if(YqConfig.yqlang) {
+            YqLang.load()
+        }
         logger.info { "Loaded yqbot." }
     }
 
@@ -53,6 +59,12 @@ object Yqbot : KotlinPlugin(
         if(YqConfig.repeater) {
             Repeater.unload()
         }
+        if(YqConfig.chatbot) {
+            Chatbot.unload()
+        }
+        if(YqConfig.yqlang) {
+            YqLang.unload()
+        }
     }
 }
 
@@ -60,4 +72,6 @@ object YqConfig: AutoSavePluginConfig("yqconfig") {
     val sgl: Boolean by value(true)
     val goshujin: Boolean by value(true)
     val repeater: Boolean by value(true)
+    val chatbot: Boolean by value(true)
+    val yqlang: Boolean by value(true)
 }

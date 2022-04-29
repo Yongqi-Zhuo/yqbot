@@ -13,3 +13,8 @@ repositories {
     maven("https://maven.aliyun.com/repository/public")
     mavenCentral()
 }
+
+dependencies {
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.3.2")
+    implementation(files("../yqlang/build/libs/yqlang-1.0.jar"))
+}
