@@ -46,6 +46,9 @@ object Yqbot : KotlinPlugin(
         if(YqConfig.yqlang) {
             YqLang.load()
         }
+        if(YqConfig.wolfram) {
+            Wolfram.load()
+        }
         logger.info { "Loaded yqbot." }
     }
 
@@ -65,6 +68,9 @@ object Yqbot : KotlinPlugin(
         if(YqConfig.yqlang) {
             YqLang.unload()
         }
+        if(YqConfig.wolfram) {
+            Wolfram.unload()
+        }
     }
 }
 
@@ -74,4 +80,5 @@ object YqConfig: AutoSavePluginConfig("yqconfig") {
     val repeater: Boolean by value(true)
     val chatbot: Boolean by value(true)
     val yqlang: Boolean by value(true)
+    val wolfram: Boolean by value(true)
 }
