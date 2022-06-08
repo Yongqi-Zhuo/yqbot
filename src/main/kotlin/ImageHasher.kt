@@ -2,6 +2,9 @@ package top.saucecode
 
 import top.saucecode.ImageHasher.Companion.distance
 import java.awt.image.BufferedImage
+import java.util.concurrent.locks.ReentrantReadWriteLock
+import kotlin.concurrent.read
+import kotlin.concurrent.write
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sqrt
@@ -51,11 +54,14 @@ class ImageHasher {
 }
 
 class ImageHashDatabase(
-    var threshold: Int,
-    private val hashes: MutableList<Long>,
+    private var threshold: Int,
+    private val hashes: MutableMap<Int, Long>,
     private val exempt: MutableSet<Int>
 ) {
     private val chunks = List(8) { List(256) { mutableListOf<Int>() } }
+    // only lock in public methods
+    private val lock = ReentrantReadWriteLock()
+
     private fun addToChunks(index: Int, hash: ULong) {
         var h = hash
         for (tier in 0 until 8) {
@@ -65,14 +71,16 @@ class ImageHashDatabase(
     }
 
     init {
-        for (index in 0 until hashes.size) {
-            addToChunks(index, hashes[index].toULong())
+        lock.write {
+            for ((index, hash) in hashes) {
+                addToChunks(index, hash.toULong())
+            }
         }
     }
 
     private fun checkNode(node: MutableList<Int>, q: ULong): Int? {
         for (h in node) {
-            if ((q distance hashes[h].toULong()) <= threshold) {
+            if ((q distance hashes[h]!!.toULong()) <= threshold) {
                 return h
             }
         }
@@ -80,7 +88,7 @@ class ImageHashDatabase(
     }
 
     fun query(q: ULong): Int? {
-        synchronized(hashes) {
+        lock.read {
             var h = q
             for (tier in 0 until 8) {
                 if (chunks[7 - tier][(h % 256UL).toInt()].size > 0) {
@@ -98,16 +106,24 @@ class ImageHashDatabase(
         }
     }
 
-    fun addHash(hash: ULong) {
-        synchronized(hashes) {
-            hashes.add(hash.toLong())
-            addToChunks(hashes.lastIndex, hash)
+    fun addHash(index: Int, hash: ULong) {
+        lock.write {
+            hashes[index] = hash.toLong()
+            addToChunks(index, hash)
         }
     }
 
     fun addExempt(index: Int) {
-        exempt.add(index)
+        lock.write {
+            exempt.add(index)
+        }
     }
 
-    fun hash(index: Int) = hashes[index].toULong()
+    fun hash(index: Int): ULong = lock.read { hashes[index]!!.toULong() }
+
+    fun setThreshold(threshold: Int) {
+        lock.write {
+            this.threshold = threshold
+        }
+    }
 }

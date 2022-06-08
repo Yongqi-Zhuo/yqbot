@@ -68,7 +68,7 @@ object SglManager {
         SglConfigStore.reload()
         toBeIgnored = SglConfigStore.toBeIgnored
         shutup = SglConfigStore.shutup
-        SglDatabase.readFromFile()
+        SglDatabase.load()
         SglCommand.register()
         GlobalEventChannel.parentScope(Yqbot).subscribeAlways<GroupMessageEvent> {
             if (!enabled || shutup.contains(group.id)) return@subscribeAlways
