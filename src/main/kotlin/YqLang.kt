@@ -140,6 +140,23 @@ object YqLang {
             }
         }
 
+        private suspend fun updateCommand(index: Int, source: String) {
+            val programs = YqlangStore.programs[id]
+            if (programs?.indices?.contains(index) == true) {
+                val interpreter = try {
+                    RestrictedInterpreter(source)
+                } catch (e: Exception) {
+                    sendMsg("程序编译失败${e.javaClass}，参考原因：${e.message}。")
+                    return
+                }
+                programs[index] = Storage(source, programs[index].symbolTable)
+                states[id]!![index] = Process(interpreter, states[id]!![index].symbolTable)
+                sendMsg("程序${index + 1}更新成功。")
+            } else {
+                sendMsg("没有找到这个程序。")
+            }
+        }
+
         private suspend fun removeCommand(index: Int) {
             if(YqlangStore.programs[id]?.indices?.contains(index) == true) {
                 YqlangStore.programs[id]!!.removeAt(index)
@@ -152,10 +169,10 @@ object YqLang {
 
         suspend fun respondToTextMessage(rawText: String, sender: Long) {
             if(rawText.startsWith("/yqlang add")) {
-                val source = rawText.substring("/yqlang add".length)
+                val source = rawText.substring("/yqlang add".length).trim()
                 runCommand(source, run = true, save = true, firstRun = true)
             } else if(rawText.startsWith("/yqlang run")) {
-                val source = rawText.substring("/yqlang run".length)
+                val source = rawText.substring("/yqlang run".length).trim()
                 runCommand(source, run = true, save = false, firstRun = true)
             } else if (rawText.startsWith("/yqlang list")) {
                 val index = rawText.substring("/yqlang list".length).trim().toIntOrNull()
@@ -164,12 +181,24 @@ object YqLang {
                 } else {
                     listCommands()
                 }
+            } else if (rawText.startsWith("/yqlang update")) {
+                val indexAndSource = rawText.substring("/yqlang update".length).trim().split(" ", "\n", limit = 2)
+                if(indexAndSource.size == 2) {
+                    val index = indexAndSource[0].toIntOrNull()?.minus(1)
+                    if(index != null) {
+                        updateCommand(index, indexAndSource[1])
+                    } else {
+                        sendMsg("程序编号是正整数。")
+                    }
+                } else {
+                    sendMsg("必须输入程序编号和更新后的源代码。")
+                }
             } else if(rawText.startsWith("/yqlang remove")) {
                 var index = rawText.substring("/yqlang remove".length).trim().toIntOrNull()
                 index = if(index == null) null else index - 1
                 index?.let { removeCommand(it) } ?: sendMsg("请输入要删除的程序序号。")
             } else if(rawText == "/yqlang help") {
-                var helpMsg = "/yqlang add <程序> - 添加一个新的程序。\n/yqlang run <程序> - 执行一个程序。\n/yqlang list - 显示所有程序。\n/yqlang remove <序号> - 删除一个程序。\n/yqlang help - 显示帮助信息。\n"
+                var helpMsg = "/yqlang add <程序> - 添加一个新的程序。\n/yqlang run <程序> - 执行一个程序。\n/yqlang list - 显示所有程序。\n/yqlang update <序号> <程序> - 更新一个程序。\n/yqlang remove <序号> - 删除一个程序。\n/yqlang help - 显示帮助信息。\n"
                 helpMsg += "当前的内置函数有\n" + Constants.builtinProceduresHelps.keys.joinToString(", ") + "\n可以使用/yqlang help <builtin> 查看具体的帮助信息。"
                 sendMsg(helpMsg)
             } else if(rawText.startsWith("/yqlang help ")) {
