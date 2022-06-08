@@ -17,4 +17,5 @@ repositories {
 dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.3.2")
     implementation(files("../yqlang/build/libs/yqlang-1.0.jar"))
+    implementation("io.socket:socket.io-client:2.0.1")
 }

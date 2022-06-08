@@ -49,6 +49,9 @@ object Yqbot : KotlinPlugin(
         if(YqConfig.wolfram) {
             Wolfram.load()
         }
+        if (YqConfig.wordguess) {
+            WordGuessManager.load()
+        }
         logger.info { "Loaded yqbot." }
     }
 
@@ -71,6 +74,9 @@ object Yqbot : KotlinPlugin(
         if(YqConfig.wolfram) {
             Wolfram.unload()
         }
+        if(YqConfig.wordguess) {
+            WordGuessManager.unload()
+        }
     }
 }
 
@@ -81,4 +87,5 @@ object YqConfig: AutoSavePluginConfig("yqconfig") {
     val chatbot: Boolean by value(true)
     val yqlang: Boolean by value(true)
     val wolfram: Boolean by value(true)
+    val wordguess: Boolean by value(true)
 }
