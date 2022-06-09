@@ -7,25 +7,22 @@ import net.mamoe.mirai.console.command.CompositeCommand
 import net.mamoe.mirai.console.command.MemberCommandSender
 import net.mamoe.mirai.console.data.AutoSavePluginData
 import net.mamoe.mirai.console.data.value
+import net.mamoe.mirai.console.permission.AbstractPermitteeId
 import net.mamoe.mirai.console.permission.PermissionService.Companion.hasPermission
+import net.mamoe.mirai.console.permission.PermissionService.Companion.permit
 import net.mamoe.mirai.contact.AnonymousMember
 import net.mamoe.mirai.contact.isOperator
 import net.mamoe.mirai.contact.nameCardOrNick
 import net.mamoe.mirai.event.GlobalEventChannel
-import net.mamoe.mirai.event.events.GroupMessageEvent
 import net.mamoe.mirai.event.events.MessageRecallEvent
 import net.mamoe.mirai.message.data.*
-import net.mamoe.mirai.message.data.Image.Key.queryUrl
 import net.mamoe.mirai.message.data.MessageSource.Key.quote
 import top.saucecode.ImageHasher.Companion.dctHash
 import top.saucecode.ImageHasher.Companion.distance
 import top.saucecode.Yqbot.logger
 import top.saucecode.Yqbot.reload
-import java.io.IOException
-import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.*
-import javax.imageio.ImageIO
 import kotlin.concurrent.schedule
 
 object SglManager {
@@ -70,8 +67,9 @@ object SglManager {
         shutup = SglConfigStore.shutup
         SglDatabase.load()
         SglCommand.register()
-        GlobalEventChannel.parentScope(Yqbot).subscribeAlways<GroupMessageEvent> {
-            if (!enabled || shutup.contains(group.id)) return@subscribeAlways
+
+        Yqbot.registerImageLoadedMessageListener { bufferedImages ->
+            if (!enabled || shutup.contains(subject.id)) return@registerImageLoadedMessageListener
             var imgCnt = 0
             val collector: MutableMap<ImageSender, MutableList<Int>> = mutableMapOf()
             val repeated = mutableListOf<Image>()
@@ -81,48 +79,38 @@ object SglManager {
             val messageChains: List<MessageChain> =
                 message[ForwardMessage]?.nodeList?.map { it.messageChain } ?: listOf(message)
             val thisSender = ImageSender(if (sender is AnonymousMember) ImageSender.anonymousID else sender.id, time)
-            messageChains.forEach { chain ->
-                chain.forEach chainForeach@{
-                    if ((it !is Image) || it.isEmoji) return@chainForeach
-                    imgCnt += 1
-                    Yqbot.logger.debug("Image found! Downloading...")
-                    try {
-                        val image = ImageIO.read(URL(it.queryUrl()))
-                        val hash = image.dctHash()
-                        Yqbot.logger.debug("Downloaded. Hash equals $hash")
-                        val q = SglDatabase.query(group.id, hash)
-                        if (q != null) {
-                            // sgl
-                            Yqbot.logger.debug("Matched. Distance: ${SglDatabase.hash(group.id, q) distance hash}")
-                            val isender = SglDatabase.sender(group.id, q)
-                            if(isender == thisSender) {
-                                return@chainForeach
-                            }
-                            if (collector[isender] == null) collector[isender] = mutableListOf()
-                            collector[isender]!!.add(imgCnt)
-                            repeated.add(it)
-                            sglCount += 1
-                            if (notSglYet) {
-                                if (toBeIgnored[group.id] == null) {
-                                    toBeIgnored[group.id] = mutableMapOf()
-                                } else {
-                                    toBeIgnored[group.id]!!.clear()
-                                }
-                                notSglYet = false
-                            }
-                            toBeIgnored[group.id]!![imgCnt] = q
-                        } else {
-                            // 没sg
-                            SglDatabase.addRecord(group.id, hash, thisSender)
-                        }
-                    } catch (e: IOException) {
-                        Yqbot.logger.warning("Failed to download image. Reason: ${e.message}")
-                    } catch (e: NullPointerException) {
-                        Yqbot.logger.warning("Null pointer found when processing image. Reason: ${e.message}")
+            messageChains.forEach { chain -> chain.forEach chainForeach@{
+                if ((it !is Image) || it.isEmoji) return@chainForeach
+                imgCnt += 1
+                Yqbot.logger.debug("In total ${bufferedImages.size} buffered images. They are: ${bufferedImages.keys.joinToString(", ")}. Now processing image ${it.imageId}")
+                val hash = bufferedImages[it.imageId]!!.dctHash()
+                val q = SglDatabase.query(subject.id, hash)
+                if (q != null) {
+                    // sgl
+                    Yqbot.logger.debug("Matched. Distance: ${SglDatabase.hash(subject.id, q) distance hash}")
+                    val isender = SglDatabase.sender(subject.id, q)
+                    if(isender == thisSender) {
+                        return@chainForeach
                     }
+                    if (collector[isender] == null) collector[isender] = mutableListOf()
+                    collector[isender]!!.add(imgCnt)
+                    repeated.add(it)
+                    sglCount += 1
+                    if (notSglYet) {
+                        if (toBeIgnored[subject.id] == null) {
+                            toBeIgnored[subject.id] = mutableMapOf()
+                        } else {
+                            toBeIgnored[subject.id]!!.clear()
+                        }
+                        notSglYet = false
+                    }
+                    toBeIgnored[subject.id]!![imgCnt] = q
+                } else {
+                    // 没sg
+                    SglDatabase.addRecord(subject.id, hash, thisSender)
                 }
-            }
-            if (sglCount == 0) return@subscribeAlways
+            } }
+            if (sglCount == 0) return@registerImageLoadedMessageListener
             val format = SimpleDateFormat("yyyy年MM月dd日HH时mm分ss秒")
             val msg = "水过啦！" +
                     (if (forwardFlag) "转发消息里的" else "") +
@@ -134,8 +122,7 @@ object SglManager {
                                 "（${format.format(Date(isender.time * 1000L))}）" +
                                 (if (isender.isAnonymous)
                                     "由匿名用户" else
-                                    "由${group[isender.id]?.nameCardOrNick ?: ""}" +
-                                            "（${isender.id}）")
+                                    "由${senderName}" + "（${isender.id}）")
                     } +
                     (if (collector.size == 1) "" else "\n") +
                     "水过了。" +
@@ -143,7 +130,7 @@ object SglManager {
                         "如果这是一张表情包，请发送 /sgl ignore 来忽略。" else
                         "如果这些图片中有表情包，请发送 /sgl ignore [要忽略的序号] 来忽略。")
             try {
-                group.sendMessage(buildMessageChain {
+                subject.sendMessage(buildMessageChain {
                     +message.quote()
                     +PlainText(msg)
                 })
@@ -152,12 +139,13 @@ object SglManager {
             }
             // 鞭尸
             val locator = MessageLocator(message.ids, message.internalId, message.time)
-            if (!antiRecall.contains(group.id)) antiRecall[group.id] = mutableMapOf()
-            antiRecall[group.id]!![locator] = repeated
+            if (!antiRecall.contains(subject.id)) antiRecall[subject.id] = mutableMapOf()
+            antiRecall[subject.id]!![locator] = repeated
             Timer("VoidAntiRecallMemory", false).schedule(300000) {
-                antiRecall[group.id]!!.remove(locator)
+                antiRecall[subject.id]!!.remove(locator)
             }
         }
+        // FriendRecall 不需要鞭尸
         GlobalEventChannel.parentScope(Yqbot).subscribeAlways<MessageRecallEvent.GroupRecall> {
             if (!enabled || shutup.contains(group.id)) return@subscribeAlways
             if (authorId != operator?.id) return@subscribeAlways
@@ -174,6 +162,7 @@ object SglManager {
                 }
             }
         }
+        AbstractPermitteeId.AnyUser.permit(SglCommand.permission)
     }
 
     fun unload() {

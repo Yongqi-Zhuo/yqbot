@@ -7,6 +7,8 @@ import net.mamoe.mirai.console.command.CommandManager.INSTANCE.register
 import net.mamoe.mirai.console.command.CommandManager.INSTANCE.unregister
 import net.mamoe.mirai.console.command.CompositeCommand
 import net.mamoe.mirai.console.command.MemberCommandSender
+import net.mamoe.mirai.console.permission.AbstractPermitteeId
+import net.mamoe.mirai.console.permission.PermissionService.Companion.permit
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
@@ -262,6 +264,7 @@ object WordGuessManager {
     }
     fun load() {
         WordGuessCommand.register()
+        AbstractPermitteeId.AnyUser.permit(WordGuessCommand.permission)
     }
     fun unload() {
         WordGuessCommand.unregister()

@@ -7,6 +7,8 @@ import net.mamoe.mirai.console.command.CompositeCommand
 import net.mamoe.mirai.console.command.ConsoleCommandSender
 import net.mamoe.mirai.console.data.AutoSavePluginConfig
 import net.mamoe.mirai.console.data.value
+import net.mamoe.mirai.console.permission.AbstractPermitteeId
+import net.mamoe.mirai.console.permission.PermissionService.Companion.permit
 import net.mamoe.mirai.event.GlobalEventChannel
 import net.mamoe.mirai.event.events.GroupMessageEvent
 import net.mamoe.mirai.message.code.MiraiCode.deserializeMiraiCode
@@ -73,6 +75,7 @@ object Repeater {
                 group.sendMessage(whatToDo.deserializeMiraiCode(group))
             }
         }
+        AbstractPermitteeId.AnyUser.permit(RepeaterCommand.permission)
     }
 
     fun unload() {

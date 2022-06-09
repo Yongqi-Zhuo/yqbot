@@ -4,13 +4,9 @@ import kotlinx.coroutines.launch
 import net.mamoe.mirai.Bot
 import net.mamoe.mirai.console.data.AutoSavePluginData
 import net.mamoe.mirai.console.data.value
-import net.mamoe.mirai.contact.Contact
-import net.mamoe.mirai.contact.Friend
-import net.mamoe.mirai.contact.Group
-import net.mamoe.mirai.contact.nameCardOrNick
+import net.mamoe.mirai.contact.*
 import net.mamoe.mirai.event.GlobalEventChannel
-import net.mamoe.mirai.event.events.FriendMessageEvent
-import net.mamoe.mirai.event.events.GroupMessageEvent
+import net.mamoe.mirai.event.events.MessageEvent
 import net.mamoe.mirai.event.events.NudgeEvent
 import top.saucecode.NodeValue.NodeValue
 import top.saucecode.NodeValue.toNodeValue
@@ -38,11 +34,24 @@ object YqLang {
         }
     }
 
-    abstract class ExecutionManager {
-        protected abstract val id: Long
-        protected abstract val sendMsg: suspend (String) -> Unit
-        protected abstract val sendNudge: suspend (Long) -> Unit
-        protected abstract val getNickName: (Long) -> String
+    class ExecutionManager(subject: Contact) {
+        private val id: Long = subject.id
+        private val sendMsg: suspend (String) -> Unit = { msg ->
+            if (msg.isNotEmpty()) subject.sendMessage(msg)
+        }
+        private val sendNudge: suspend (Long) -> Unit = { target ->
+            when (subject) {
+                is Group -> subject[target]?.nudge()?.sendTo(subject)
+                is User -> if (subject.id == target) subject.nudge().sendTo(subject)
+            }
+        }
+        private val getNickName: (Long) -> String = { target ->
+            when (subject) {
+                is Group -> subject[target]?.nameCardOrNick
+                is User -> if (subject.id == target) subject.nick else null
+                else -> null
+            } ?: "$target"
+        }
 
         private suspend fun runCommand(source: String, run: Boolean, save: Boolean, firstRun: Boolean) {
             val msg = mutableListOf<String>()
@@ -89,17 +98,17 @@ object YqLang {
         suspend fun eventRunCommand(events: Map<String, NodeValue>) {
             val processes = states[id]
             var index = 0
-            processes?.forEach {
+            processes?.forEach { process ->
                 index += 1
-                if(it.interpreter != null) {
+                if(process.interpreter != null) {
                     try {
-                        val context = BotContext(it.symbolTable, false, events, getNickName)
-                        it.interpreter.run(context, reduced = true).collect { reducedOutput ->
+                        val context = BotContext(process.symbolTable, false, events, getNickName)
+                        process.interpreter.run(context, reduced = true).collect { reducedOutput ->
                             val output = reducedOutput as Output.Reduced
                             output.text?.let { sendMsg(it) }
                             output.nudge?.let { sendNudge(it) }
                         }
-                        YqlangStore.programs[id]!![index - 1].symbolTable = it.symbolTable.serialize()
+                        YqlangStore.programs[id]!![index - 1].symbolTable = process.symbolTable.serialize()
                     } catch (e: Exception) {
                         sendMsg("程序${index}执行出错${e.javaClass}，参考原因：${e.message}。")
                     }
@@ -228,61 +237,18 @@ object YqLang {
                     }
                 }
             }
-
-            fun fromSubject(subject: Contact): ExecutionManager? {
-                return when (subject) {
-                    is Group -> GroupExecutionManager(subject)
-                    is Friend -> FriendExecutionManager(subject)
-                    else -> null
-                }
-            }
-        }
-    }
-
-    class GroupExecutionManager(group: Group): ExecutionManager() {
-        override val id = group.id
-        override val sendMsg: suspend (String) -> Unit= { msg: String ->
-            if (msg.isNotEmpty()) group.sendMessage(msg)
-        }
-        override val sendNudge: suspend (Long) -> Unit = { target: Long ->
-            group[target]?.nudge()?.sendTo(group)
-        }
-        override val getNickName: (Long) -> String = { target: Long ->
-            group[target]?.nameCardOrNick ?: target.toString()
-        }
-    }
-
-    class FriendExecutionManager(friend: Friend): ExecutionManager() {
-        override val id = friend.id
-        override val sendMsg: suspend (String) -> Unit= { msg: String ->
-            if (msg.isNotEmpty()) friend.sendMessage(msg)
-        }
-        override val sendNudge: suspend (Long) -> Unit = { target: Long ->
-            if (friend.id == target) {
-                friend.nudge().sendTo(friend)
-            }
-        }
-        override val getNickName: (Long) -> String = { target: Long ->
-            if (friend.id == target) {
-                friend.nameCardOrNick
-            } else {
-                target.toString()
-            }
         }
     }
 
     fun load() {
         YqlangStore.reload()
         ExecutionManager.loadPrograms()
-        GlobalEventChannel.parentScope(Yqbot).subscribeAlways<GroupMessageEvent> {
-            GroupExecutionManager(group).respondToTextMessage(message.contentToString(), sender.id)
-        }
-        GlobalEventChannel.parentScope(Yqbot).subscribeAlways<FriendMessageEvent> {
-            FriendExecutionManager(friend).respondToTextMessage(message.contentToString(), sender.id)
+        GlobalEventChannel.parentScope(Yqbot).subscribeAlways<MessageEvent> {
+            ExecutionManager(subject).respondToTextMessage(message.contentToString(), sender.id)
         }
         GlobalEventChannel.parentScope(Yqbot).subscribeAlways<NudgeEvent> {
             if (target is Bot) {
-                ExecutionManager.fromSubject(subject)?.eventRunCommand(mapOf("nudged" to from.id.toNodeValue()))
+                ExecutionManager(subject).eventRunCommand(mapOf("nudged" to from.id.toNodeValue()))
             }
         }
 
@@ -293,7 +259,7 @@ object YqLang {
                     for (gid in states.keys) {
                         Yqbot.launch {
                             val subject: Contact? = bot.getGroup(gid) ?: bot.getFriend(gid)
-                            subject?.let { ExecutionManager.fromSubject(it) }?.eventRunCommand(mapOf("clock" to now.toNodeValue()))
+                            subject?.let { ExecutionManager(it) }?.eventRunCommand(mapOf("clock" to now.toNodeValue()))
                         }
                     }
                 }
