@@ -10,9 +10,7 @@ import net.mamoe.mirai.console.data.value
 import net.mamoe.mirai.console.permission.AbstractPermitteeId
 import net.mamoe.mirai.console.permission.PermissionService.Companion.hasPermission
 import net.mamoe.mirai.console.permission.PermissionService.Companion.permit
-import net.mamoe.mirai.contact.AnonymousMember
-import net.mamoe.mirai.contact.isOperator
-import net.mamoe.mirai.contact.nameCardOrNick
+import net.mamoe.mirai.contact.*
 import net.mamoe.mirai.event.GlobalEventChannel
 import net.mamoe.mirai.event.events.MessageRecallEvent
 import net.mamoe.mirai.message.data.*
@@ -112,6 +110,13 @@ object SglManager {
             } }
             if (sglCount == 0) return@registerImageLoadedMessageListener
             val format = SimpleDateFormat("yyyy年MM月dd日HH时mm分ss秒")
+            fun getUserName(target: Long): String {
+                return when (subject) {
+                    is Group -> (subject as Group)[target]?.nameCardOrNick
+                    is User -> if (subject.id == target) (subject as User).nick else null
+                    else -> null
+                } ?: "$target"
+            }
             val msg = "水过啦！" +
                     (if (forwardFlag) "转发消息里的" else "") +
                     (if (imgCnt == 1) "这张图片" else "这些图片中的") +
@@ -122,7 +127,7 @@ object SglManager {
                                 "（${format.format(Date(isender.time * 1000L))}）" +
                                 (if (isender.isAnonymous)
                                     "由匿名用户" else
-                                    "由${senderName}" + "（${isender.id}）")
+                                    "由${getUserName(isender.id)}" + "（${isender.id}）")
                     } +
                     (if (collector.size == 1) "" else "\n") +
                     "水过了。" +

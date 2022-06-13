@@ -1,9 +1,8 @@
 package top.saucecode
 
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.asFlow
+import kotlinx.coroutines.flow.map
 import net.mamoe.mirai.console.command.CommandManager.INSTANCE.register
 import net.mamoe.mirai.console.command.CommandManager.INSTANCE.unregister
 import net.mamoe.mirai.console.data.AutoSavePluginConfig
@@ -65,33 +64,21 @@ object Yqbot : KotlinPlugin(
             WordGuessManager.load()
         }
         GlobalEventChannel.parentScope(Yqbot).subscribeAlways<MessageEvent> { messageEvent ->
+            val directImages = message.filterIsInstance<Image>()
+            val indirectImages = message[ForwardMessage]?.nodeList?.flatMap {
+                it.messageChain.filterIsInstance<Image>()
+            } ?: emptyList()
             // use coroutine to download images concurrently
-            val images = coroutineScope {
-                val imgs = mutableMapOf<String, BufferedImage>()
-                val imageIds = mutableSetOf<String>()
-                val directImages = message.filterIsInstance<Image>()
-                val indirectImages = message[ForwardMessage]?.nodeList?.flatMap {
-                    it.messageChain.filterIsInstance<Image>()
-                } ?: emptyList()
-                (directImages + indirectImages).forEach {
-                    if (!imageIds.contains(it.imageId)) {
-                        imageIds.add(it.imageId)
-                        launch {
-                            imgs[it.imageId] = withContext(Dispatchers.IO) {
-                                ImageIO.read(URL(it.queryUrl()))
-                            }
-                        }
+            val images = (directImages + indirectImages).map { image: Image ->
+                async {
+                    withContext(Dispatchers.IO) {
+                        Pair(image.imageId, ImageIO.read(URL(image.queryUrl())))
                     }
                 }
-                imgs
-            }
-            coroutineScope {
-                messageListeners.forEach { listener ->
-                    launch {
-                        listener(messageEvent, images)
-                    }
-                }
-            }
+            }.awaitAll().toMap()
+            messageListeners.map {
+                async { it(messageEvent, images) }
+            }.awaitAll()
         }
         logger.info { "Loaded yqbot." }
     }
@@ -133,4 +120,8 @@ object YqConfig: AutoSavePluginConfig("yqconfig") {
     val yqlang: Boolean by value(true)
     val wolfram: Boolean by value(true)
     val wordguess: Boolean by value(true)
+}
+
+object Utility {
+    val whitespace = Regex("\\s+")
 }

@@ -4,7 +4,10 @@ import kotlinx.coroutines.launch
 import net.mamoe.mirai.Bot
 import net.mamoe.mirai.console.data.AutoSavePluginData
 import net.mamoe.mirai.console.data.value
-import net.mamoe.mirai.contact.*
+import net.mamoe.mirai.contact.Contact
+import net.mamoe.mirai.contact.Group
+import net.mamoe.mirai.contact.User
+import net.mamoe.mirai.contact.nameCardOrNick
 import net.mamoe.mirai.event.GlobalEventChannel
 import net.mamoe.mirai.event.events.MessageEvent
 import net.mamoe.mirai.event.events.NudgeEvent
@@ -123,7 +126,9 @@ object YqLang {
                 val originalSource = programs!![i].source.trim()
                 val source = if(full) originalSource else {
                     val lines = originalSource.split("\n")
-                    lines.subList(0, minOf(lines.size, 5)).joinToString("\n")
+                    val limit = 5
+                    val croppedLines = lines.size - limit
+                    lines.take(limit).joinToString("\n") + if(croppedLines > 0) "\n...（省略${croppedLines}行）" else ""
                 }
                 return "第${i + 1}个程序：$additionalInfo\n源代码：${source}\n全局变量：${states[id]!![i].symbolTable.displaySymbols()}\n\n"
             }
@@ -177,52 +182,101 @@ object YqLang {
         }
 
         suspend fun respondToTextMessage(rawText: String, sender: Long) {
-            if(rawText.startsWith("/yqlang add")) {
-                val source = rawText.substring("/yqlang add".length).trim()
-                runCommand(source, run = true, save = true, firstRun = true)
-            } else if(rawText.startsWith("/yqlang run")) {
-                val source = rawText.substring("/yqlang run".length).trim()
-                runCommand(source, run = true, save = false, firstRun = true)
-            } else if (rawText.startsWith("/yqlang list")) {
-                val index = rawText.substring("/yqlang list".length).trim().toIntOrNull()
-                if(index != null) {
-                    listCommands(index)
-                } else {
-                    listCommands()
-                }
-            } else if (rawText.startsWith("/yqlang update")) {
-                val indexAndSource = rawText.substring("/yqlang update".length).trim().split(" ", "\n", limit = 2)
-                if(indexAndSource.size == 2) {
-                    val index = indexAndSource[0].toIntOrNull()?.minus(1)
-                    if(index != null) {
-                        updateCommand(index, indexAndSource[1])
-                    } else {
-                        sendMsg("程序编号是正整数。")
+            val segments = rawText.trim().split(Utility.whitespace, limit = 3)
+            if (segments.size >= 2 &&
+                segments[0] == "/yqlang"
+            ) {
+                // a command
+                when (val predicate = segments[1]) {
+                    "add", "run" -> {
+                        if (segments.size == 3) {
+                            val source = segments[2]
+                            when (predicate) {
+                                "add" -> runCommand(source, run = true, save = true, firstRun = true)
+                                "run" -> runCommand(source, run = true, save = false, firstRun = true)
+                            }
+                        } else {
+                            sendMsg("语法错误：/yqlang add <源代码> 或 /yqlang run <源代码>。")
+                        }
                     }
-                } else {
-                    sendMsg("必须输入程序编号和更新后的源代码。")
+                    "list" -> {
+                        if (segments.size == 2) {
+                            listCommands()
+                        } else if (segments.size == 3) {
+                            segments[2].toIntOrNull()?.let { listCommands(it) } ?:
+                                sendMsg("语法错误：/yqlang list <程序编号>。")
+                        }
+                    }
+                    "update" -> {
+                        var ok = false
+                        if (segments.size == 3) {
+                            val indexAndSource = segments[2].split(Utility.whitespace, limit = 2)
+                            if (indexAndSource.size == 2) {
+                                val index = indexAndSource[0].toIntOrNull()?.minus(1)
+                                if (index != null) {
+                                    val source = indexAndSource[1]
+                                    updateCommand(index, source)
+                                    ok = true
+                                }
+                            }
+                        }
+                        if (!ok) {
+                            sendMsg("语法错误：/yqlang update <程序编号> <源代码>。")
+                        }
+                    }
+                    "remove" -> {
+                        var ok = false
+                        if (segments.size == 3) {
+                            val index = segments[2].toIntOrNull()?.minus(1)
+                            if (index != null) {
+                                removeCommand(index)
+                                ok = true
+                            }
+                        }
+                        if (!ok) {
+                            sendMsg("语法错误：/yqlang remove <程序编号>。")
+                        }
+                    }
+                    "help" -> {
+                        if (segments.size == 2) {
+                            sendMsg(helpMessage)
+                        } else if (segments.size == 3) {
+                            val help = segments[2].trim()
+                            if(Constants.builtinProceduresHelps.containsKey(help)) {
+                                sendMsg(Constants.builtinProceduresHelps[help]!!)
+                            } else {
+                                sendMsg("没有找到这个内置函数。")
+                            }
+                        }
+                    }
+                    else -> {
+                        sendMsg("目前没有这个功能：$predicate。可以输入 /yqlang help 查看帮助信息。")
+                    }
                 }
-            } else if(rawText.startsWith("/yqlang remove")) {
-                var index = rawText.substring("/yqlang remove".length).trim().toIntOrNull()
-                index = if(index == null) null else index - 1
-                index?.let { removeCommand(it) } ?: sendMsg("请输入要删除的程序序号。")
-            } else if(rawText == "/yqlang help") {
-                var helpMsg = "/yqlang add <程序> - 添加一个新的程序。\n/yqlang run <程序> - 执行一个程序。\n/yqlang list - 显示所有程序。\n/yqlang update <序号> <程序> - 更新一个程序。\n/yqlang remove <序号> - 删除一个程序。\n/yqlang help - 显示帮助信息。\n"
-                helpMsg += "当前的内置函数有\n" + Constants.builtinProceduresHelps.keys.joinToString(", ") + "\n可以使用/yqlang help <builtin> 查看具体的帮助信息。"
-                sendMsg(helpMsg)
-            } else if(rawText.startsWith("/yqlang help ")) {
-                val help = rawText.substring("/yqlang help ".length)
-                if(Constants.builtinProceduresHelps.containsKey(help)) {
-                    sendMsg(Constants.builtinProceduresHelps[help]!!)
-                } else {
-                    sendMsg("没有找到这个内置函数。")
-                }
+            } else if (segments.size == 1 &&
+                segments[0] == "/yqlang" ) {
+                sendMsg("""
+                    yqlang是yqbot的一个简单的脚本语言，可以用来编写脚本实现特定的功能。语言手册可以在群文件中找到。
+                    程序可以只执行一次（/yqlang run），也可以设置为在事件发生时被调用（/yqlang add）。
+                    支持的指令如下：
+                """.trimIndent() + "\n" + helpMessage)
             } else {
+                // a message
                 eventRunCommand(mapOf("text" to rawText.toNodeValue(), "sender" to sender.toNodeValue()))
             }
         }
 
         companion object {
+            val helpMessage =
+                """/yqlang add <程序> - 添加一个新的程序，在每次新事件到来时都会触发执行。
+                   /yqlang run <程序> - 执行一个程序。
+                   /yqlang list - 显示所有程序及其全局变量。
+                   /yqlang list <程序编号> - 显示指定程序的完整源代码。
+                   /yqlang update <序号> <程序> - 更新一个程序，而不影响当前保存的全局变量。
+                   /yqlang remove <序号> - 删除一个程序。
+                   /yqlang help - 显示帮助信息。
+                   /yqlang help <内置函数> - 显示指定函数的帮助信息。
+                """.trimIndent()
             fun loadPrograms() {
                 YqlangStore.programs.forEach { gs ->
                     states[gs.key] = mutableListOf()
@@ -243,7 +297,7 @@ object YqLang {
     fun load() {
         YqlangStore.reload()
         ExecutionManager.loadPrograms()
-        GlobalEventChannel.parentScope(Yqbot).subscribeAlways<MessageEvent> {
+        Yqbot.registerImageLoadedMessageListener { images ->
             ExecutionManager(subject).respondToTextMessage(message.contentToString(), sender.id)
         }
         GlobalEventChannel.parentScope(Yqbot).subscribeAlways<NudgeEvent> {
