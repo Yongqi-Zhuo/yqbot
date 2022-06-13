@@ -50,7 +50,7 @@ object Wolfram {
                                 val plaintext = subpod.getElementsByTagName("plaintext").item(0).textContent
                                 results.add(PlainText("\n" + plaintext))
                                 val imgUrl = URL((subpod.getElementsByTagName("img").item(0) as Element).getAttribute("src"))
-                                val imgResource = imgUrl.openStream().toExternalResource()
+                                val imgResource = imgUrl.openStream().use { it.toExternalResource() }
                                 val img = group.uploadImage(imgResource)
                                 imgResource.close()
                                 results.add(img)

@@ -1,5 +1,7 @@
 package top.saucecode
 
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.launch
 import net.mamoe.mirai.Bot
 import net.mamoe.mirai.console.data.AutoSavePluginData
@@ -9,12 +11,20 @@ import net.mamoe.mirai.contact.Group
 import net.mamoe.mirai.contact.User
 import net.mamoe.mirai.contact.nameCardOrNick
 import net.mamoe.mirai.event.GlobalEventChannel
-import net.mamoe.mirai.event.events.MessageEvent
 import net.mamoe.mirai.event.events.NudgeEvent
+import net.mamoe.mirai.message.data.*
+import net.mamoe.mirai.utils.ExternalResource
+import net.mamoe.mirai.utils.ExternalResource.Companion.toExternalResource
+import net.mamoe.mirai.utils.ExternalResource.Companion.uploadAsImage
+import net.mamoe.mirai.utils.info
+import top.saucecode.NodeValue.ListValue
 import top.saucecode.NodeValue.NodeValue
 import top.saucecode.NodeValue.toNodeValue
 import top.saucecode.Yqbot.reload
+import java.awt.image.BufferedImage
+import java.io.File
 import java.util.*
+import javax.imageio.ImageIO
 
 object YqLang {
 
@@ -37,10 +47,29 @@ object YqLang {
         }
     }
 
-    class ExecutionManager(subject: Contact) {
+    class PerGroupStorage(gid: Long) {
+        val path = Yqbot.dataFolderPath.toString() + "/yqlang/$gid"
+        fun getPicture(picId: String): ExternalResource? {
+            val f = File(path, picId)
+            return if (f.exists()) {
+                f.toExternalResource()
+            } else {
+                null
+            }
+        }
+        fun savePicture(picId: String, image: BufferedImage) {
+            val f = File(path, picId)
+            f.parentFile.mkdirs()
+            // extract extension from picId
+            val ext = picId.substring(picId.lastIndexOf('.') + 1)
+            ImageIO.write(image, ext, f)
+        }
+    }
+
+    class ExecutionManager(private val subject: Contact) {
         private val id: Long = subject.id
-        private val sendMsg: suspend (String) -> Unit = { msg ->
-            if (msg.isNotEmpty()) subject.sendMessage(msg)
+        private val sendMsg: suspend (MessageChain?) -> Unit = { msg ->
+            if (msg != null && msg.any { it is PlainText || it is Image }) subject.sendMessage(msg)
         }
         private val sendNudge: suspend (Long) -> Unit = { target ->
             when (subject) {
@@ -55,68 +84,96 @@ object YqLang {
                 else -> null
             } ?: "$target"
         }
+        private val storage: PerGroupStorage = PerGroupStorage(id)
 
-        private suspend fun runCommand(source: String, run: Boolean, save: Boolean, firstRun: Boolean) {
-            val msg = mutableListOf<String>()
+        private fun String.toMsg(): MessageChain? = if (this.isNotEmpty()) this.toPlainText().toMessageChain() else null
+
+        private suspend fun runProcess(process: Process, pid: Int, context: ControlledContext, images: Map<String, BufferedImage>?, save: Storage? = null) {
+            if (process.interpreter == null) return
+            coroutineScope { try {
+                process.interpreter.run(context).collect { outputs ->
+                    val builder = MessageChainBuilder()
+                    outputs.forEach { output ->
+                        when (output) {
+                            is Output.Text -> builder.add(output.text + "\n")
+                            is Output.PicSend -> {
+                                if (images?.containsKey(output.picId) == true) {
+                                    // recent, resend
+                                    Yqbot.logger.info { "resend pic ${output.picId}" }
+                                    builder.add(Image(output.picId))
+                                } else {
+                                    // read from storage
+                                    val image = storage.getPicture(output.picId)?.use {
+                                        it.uploadAsImage(subject)
+                                    }
+                                    Yqbot.logger.info { "read pic $image" }
+                                    image?.let { builder.add(it) }
+                                }
+                            }
+                            is Output.PicSave -> {
+                                images?.get(output.picId)?.let { storage.savePicture(output.picId, it) }
+                            }
+                            is Output.Nudge -> {
+                                launch {
+                                    sendNudge(output.target)
+                                }
+                            }
+                        }
+                    }
+                    val msg = builder.build()
+                    launch {
+                        sendMsg(msg)
+                    }
+                }
+                if (save != null) {
+                    save.symbolTable = process.symbolTable.serialize()
+                }
+            } catch (e: Exception) {
+                sendMsg("程序${if (pid != 0) pid else ""}执行出错${e.javaClass}，参考原因：${e.message}。".toMsg())
+            } }
+        }
+
+        private suspend fun runCommand(source: String, images: Map<String, BufferedImage>?, run: Boolean, save: Boolean, firstRun: Boolean) {
             try {
                 val st = SymbolTable.createRoot()
                 val ast = try {
                     val interpreter = RestrictedInterpreter(source)
-                    msg.add("成功编译了程序。")
                     interpreter
                 } catch (e: Exception) {
-                    sendMsg("程序编译失败${e.javaClass}，参考原因：${e.message}。")
+                    sendMsg("程序编译失败${e.javaClass}，参考原因：${e.message}。".toMsg())
                     return
                 }
-                if (save) {
+                val process = Process(ast, st)
+                val storage = if (save) {
                     if (YqlangStore.programs[id] == null) YqlangStore.programs[id] = mutableListOf()
                     if (states[id] == null) states[id] = mutableListOf()
-                    YqlangStore.programs[id]!!.add(Storage(source, st.serialize()))
-                    states[id]!!.add(Process(ast, st))
-                    msg.add("成功添加了程序。")
-                }
-                val context = BotContext(st, firstRun, mapOf(), getNickName)
+                    val tmpStorage = Storage(source, st.serialize())
+                    YqlangStore.programs[id]!!.add(tmpStorage)
+                    states[id]!!.add(process)
+                    tmpStorage
+                } else null
                 if (run) {
-                    try {
-                        ast.run(context, reduced = true).collect { reducedOutput ->
-                            val output = reducedOutput as Output.Reduced
-                            output.text?.let { msg.add(it) }
-                            sendMsg(msg.joinToString("\n"))
-                            msg.clear()
-                            output.nudge?.let { sendNudge(it) }
-                        }
-                        if (save) {
-                            YqlangStore.programs[id]!!.last().symbolTable = st.serialize()
-                        }
-                    } catch (e: Exception) {
-                        msg.add("程序执行出错${e.javaClass}，参考原因：${e.message}。")
-                    }
+                    val imgList = images?.keys?.map { it.toNodeValue() }?.toNodeValue() ?: ListValue(mutableListOf())
+                    val context = BotContext(st, firstRun, mapOf("images" to imgList), getNickName)
+                    runProcess(process, 0, context, images, storage)
                 }
             } catch (e: Exception) {
-                msg.add("发生了未知错误${e.javaClass}，参考原因：${e.message}。")
+                sendMsg("发生了未知错误${e.javaClass}，参考原因：${e.message}。".toMsg())
             }
-            sendMsg(msg.joinToString("\n"))
         }
 
-        suspend fun eventRunCommand(events: Map<String, NodeValue>) {
+        suspend fun eventRunCommand(events: Map<String, NodeValue>, images: Map<String, BufferedImage>?) {
             val processes = states[id]
             var index = 0
-            processes?.forEach { process ->
+            coroutineScope { processes?.forEach { process ->
                 index += 1
-                if(process.interpreter != null) {
-                    try {
+                if (process.interpreter != null) {
+                    launch {
                         val context = BotContext(process.symbolTable, false, events, getNickName)
-                        process.interpreter.run(context, reduced = true).collect { reducedOutput ->
-                            val output = reducedOutput as Output.Reduced
-                            output.text?.let { sendMsg(it) }
-                            output.nudge?.let { sendNudge(it) }
-                        }
-                        YqlangStore.programs[id]!![index - 1].symbolTable = process.symbolTable.serialize()
-                    } catch (e: Exception) {
-                        sendMsg("程序${index}执行出错${e.javaClass}，参考原因：${e.message}。")
+                        runProcess(process, index, context, images, YqlangStore.programs[id]!![index - 1])
                     }
                 }
-            }
+            }}
         }
 
         private suspend fun listCommands(index: Int? = null) {
@@ -133,7 +190,7 @@ object YqLang {
                 return "第${i + 1}个程序：$additionalInfo\n源代码：${source}\n全局变量：${states[id]!![i].symbolTable.displaySymbols()}\n\n"
             }
             if(programs == null) {
-                sendMsg("还没有程序。")
+                sendMsg("还没有程序。".toMsg())
             } else {
                 if (index == null) {
                     var info = "现有程序列表：\n\n"
@@ -141,14 +198,14 @@ object YqLang {
                         info += retrieve(i, false)
                     }
                     info += "程序总数：${programs.size}。输入 /yqlang list <程序编号> 可以查看完整源代码。"
-                    sendMsg(info)
+                    sendMsg(info.toMsg())
                 } else {
                     if (index > programs.size) {
-                        sendMsg("程序${index}不存在。")
+                        sendMsg("程序${index}不存在。".toMsg())
                     } else if (index <= 0) {
-                        sendMsg("程序编号是正整数。")
+                        sendMsg("程序编号是正整数。".toMsg())
                     } else {
-                        sendMsg(retrieve(index - 1, true))
+                        sendMsg(retrieve(index - 1, true).toMsg())
                     }
                 }
             }
@@ -160,14 +217,14 @@ object YqLang {
                 val interpreter = try {
                     RestrictedInterpreter(source)
                 } catch (e: Exception) {
-                    sendMsg("程序编译失败${e.javaClass}，参考原因：${e.message}。")
+                    sendMsg("程序编译失败${e.javaClass}，参考原因：${e.message}。".toMsg())
                     return
                 }
                 programs[index] = Storage(source, programs[index].symbolTable)
                 states[id]!![index] = Process(interpreter, states[id]!![index].symbolTable)
-                sendMsg("程序${index + 1}更新成功。")
+                sendMsg("程序${index + 1}更新成功。".toMsg())
             } else {
-                sendMsg("没有找到这个程序。")
+                sendMsg("没有找到这个程序。".toMsg())
             }
         }
 
@@ -175,13 +232,13 @@ object YqLang {
             if(YqlangStore.programs[id]?.indices?.contains(index) == true) {
                 YqlangStore.programs[id]!!.removeAt(index)
                 states[id]!!.removeAt(index)
-                sendMsg("成功删除了这个程序。")
+                sendMsg("成功删除了这个程序。".toMsg())
             } else {
-                sendMsg("没有找到这个程序。")
+                sendMsg("没有找到这个程序。".toMsg())
             }
         }
 
-        suspend fun respondToTextMessage(rawText: String, sender: Long) {
+        suspend fun respondToMessageEvent(rawText: String, sender: Long, images: Map<String, BufferedImage>) {
             val segments = rawText.trim().split(Utility.whitespace, limit = 3)
             if (segments.size >= 2 &&
                 segments[0] == "/yqlang"
@@ -192,11 +249,11 @@ object YqLang {
                         if (segments.size == 3) {
                             val source = segments[2]
                             when (predicate) {
-                                "add" -> runCommand(source, run = true, save = true, firstRun = true)
-                                "run" -> runCommand(source, run = true, save = false, firstRun = true)
+                                "add" -> runCommand(source, images, run = true, save = true, firstRun = true)
+                                "run" -> runCommand(source, images, run = true, save = false, firstRun = true)
                             }
                         } else {
-                            sendMsg("语法错误：/yqlang add <源代码> 或 /yqlang run <源代码>。")
+                            sendMsg("语法错误：/yqlang add <源代码> 或 /yqlang run <源代码>。".toMsg())
                         }
                     }
                     "list" -> {
@@ -204,7 +261,7 @@ object YqLang {
                             listCommands()
                         } else if (segments.size == 3) {
                             segments[2].toIntOrNull()?.let { listCommands(it) } ?:
-                                sendMsg("语法错误：/yqlang list <程序编号>。")
+                                sendMsg("语法错误：/yqlang list <程序编号>。".toMsg())
                         }
                     }
                     "update" -> {
@@ -221,7 +278,7 @@ object YqLang {
                             }
                         }
                         if (!ok) {
-                            sendMsg("语法错误：/yqlang update <程序编号> <源代码>。")
+                            sendMsg("语法错误：/yqlang update <程序编号> <源代码>。".toMsg())
                         }
                     }
                     "remove" -> {
@@ -234,48 +291,52 @@ object YqLang {
                             }
                         }
                         if (!ok) {
-                            sendMsg("语法错误：/yqlang remove <程序编号>。")
+                            sendMsg("语法错误：/yqlang remove <程序编号>。".toMsg())
                         }
                     }
                     "help" -> {
                         if (segments.size == 2) {
-                            sendMsg(helpMessage)
+                            sendMsg(helpMessage.toMsg())
                         } else if (segments.size == 3) {
                             val help = segments[2].trim()
                             if(Constants.builtinProceduresHelps.containsKey(help)) {
-                                sendMsg(Constants.builtinProceduresHelps[help]!!)
+                                sendMsg(Constants.builtinProceduresHelps[help]!!.toMsg())
                             } else {
-                                sendMsg("没有找到这个内置函数。")
+                                sendMsg("没有找到这个内置函数。".toMsg())
                             }
                         }
                     }
                     else -> {
-                        sendMsg("目前没有这个功能：$predicate。可以输入 /yqlang help 查看帮助信息。")
+                        sendMsg("目前没有这个功能：$predicate。可以输入 /yqlang help 查看帮助信息。".toMsg())
                     }
                 }
             } else if (segments.size == 1 &&
                 segments[0] == "/yqlang" ) {
-                sendMsg("""
+                sendMsg(("""
                     yqlang是yqbot的一个简单的脚本语言，可以用来编写脚本实现特定的功能。语言手册可以在群文件中找到。
                     程序可以只执行一次（/yqlang run），也可以设置为在事件发生时被调用（/yqlang add）。
                     支持的指令如下：
-                """.trimIndent() + "\n" + helpMessage)
+                """.trimIndent() + "\n" + helpMessage).toMsg())
             } else {
                 // a message
-                eventRunCommand(mapOf("text" to rawText.toNodeValue(), "sender" to sender.toNodeValue()))
+                eventRunCommand(mapOf(
+                    "text" to rawText.toNodeValue(),
+                    "sender" to sender.toNodeValue(),
+                    "images" to images.keys.map { it.toNodeValue() }.toNodeValue()
+                ), images)
             }
         }
 
         companion object {
-            val helpMessage =
-                """/yqlang add <程序> - 添加一个新的程序，在每次新事件到来时都会触发执行。
-                   /yqlang run <程序> - 执行一个程序。
-                   /yqlang list - 显示所有程序及其全局变量。
-                   /yqlang list <程序编号> - 显示指定程序的完整源代码。
-                   /yqlang update <序号> <程序> - 更新一个程序，而不影响当前保存的全局变量。
-                   /yqlang remove <序号> - 删除一个程序。
-                   /yqlang help - 显示帮助信息。
-                   /yqlang help <内置函数> - 显示指定函数的帮助信息。
+            val helpMessage = """
+                /yqlang add <程序> - 添加一个新的程序，在每次新事件到来时都会触发执行。
+                /yqlang run <程序> - 执行一个程序。
+                /yqlang list - 显示所有程序及其全局变量。
+                /yqlang list <程序编号> - 显示指定程序的完整源代码。
+                /yqlang update <序号> <程序> - 更新一个程序，而不影响当前保存的全局变量。
+                /yqlang remove <序号> - 删除一个程序。
+                /yqlang help - 显示帮助信息。
+                /yqlang help <内置函数> - 显示指定函数的帮助信息。
                 """.trimIndent()
             fun loadPrograms() {
                 YqlangStore.programs.forEach { gs ->
@@ -298,11 +359,11 @@ object YqLang {
         YqlangStore.reload()
         ExecutionManager.loadPrograms()
         Yqbot.registerImageLoadedMessageListener { images ->
-            ExecutionManager(subject).respondToTextMessage(message.contentToString(), sender.id)
+            ExecutionManager(subject).respondToMessageEvent(message.contentToString(), sender.id, images)
         }
         GlobalEventChannel.parentScope(Yqbot).subscribeAlways<NudgeEvent> {
             if (target is Bot) {
-                ExecutionManager(subject).eventRunCommand(mapOf("nudged" to from.id.toNodeValue()))
+                ExecutionManager(subject).eventRunCommand(mapOf("nudged" to from.id.toNodeValue()), null)
             }
         }
 
@@ -313,7 +374,7 @@ object YqLang {
                     for (gid in states.keys) {
                         Yqbot.launch {
                             val subject: Contact? = bot.getGroup(gid) ?: bot.getFriend(gid)
-                            subject?.let { ExecutionManager(it) }?.eventRunCommand(mapOf("clock" to now.toNodeValue()))
+                            subject?.let { ExecutionManager(it) }?.eventRunCommand(mapOf("clock" to now.toNodeValue()), null)
                         }
                     }
                 }
