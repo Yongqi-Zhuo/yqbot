@@ -34,17 +34,12 @@ object SglDatabase: AutoCloseable {
     }
 
     var defaultThreshold: Int
-        get() = SglStore.defaultThreshold
+        get() = SglManager.defaultThreshold
         set(value) {
-            SglStore.defaultThreshold = value
+            SglManager.defaultThreshold = value
         }
-    private object SglStore : AutoSavePluginData("sgl") {
-        var defaultThreshold: Int by value(3)
-    }
 
     fun load() {
-        SglStore.reload()
-
         connection.autoCommit = false
         val statement = connection.createStatement()
 
@@ -115,7 +110,7 @@ object SglDatabase: AutoCloseable {
         return hashDatabases.computeIfAbsent(g) {
             val statement = connection.prepareStatement("insert into groups (id, threshold) values (?, ?);")
             statement.setLong(1, g)
-            statement.setInt(2, SglStore.defaultThreshold)
+            statement.setInt(2, defaultThreshold)
             statement.executeUpdate()
             connection.commit()
             statement.close()

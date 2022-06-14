@@ -37,7 +37,13 @@ object SglManager {
         val toBeIgnored: MutableMap<Long, MutableMap<Int, Int>> by value(mutableMapOf())
         var enabled: Boolean by value(true)
         val shutup: MutableSet<Long> by value(mutableSetOf())
+        var defaultThreshold: Int by value(3)
     }
+    var defaultThreshold: Int
+        get() = SglConfigStore.defaultThreshold
+        set(value) {
+            SglConfigStore.defaultThreshold = value
+        }
 
     data class MessageLocator(val ids: IntArray, val internalId: IntArray, val time: Int) {
         override fun equals(other: Any?): Boolean {

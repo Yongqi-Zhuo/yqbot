@@ -1,5 +1,5 @@
 plugins {
-    val kotlinVersion = "1.5.10"
+    val kotlinVersion = "1.6.21"
     kotlin("jvm") version kotlinVersion
     kotlin("plugin.serialization") version kotlinVersion
 
@@ -15,8 +15,7 @@ repositories {
 }
 
 dependencies {
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.3.2")
-    implementation("org.xerial:sqlite-jdbc:3.32.3.2")
     implementation(files("../yqlang/build/libs/yqlang-1.0.jar"))
+    implementation("org.xerial:sqlite-jdbc:3.32.3.2")
     implementation("io.socket:socket.io-client:2.0.1")
 }

@@ -1,7 +1,6 @@
 package top.saucecode
 
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.launch
 import net.mamoe.mirai.Bot
 import net.mamoe.mirai.console.data.AutoSavePluginData
@@ -16,11 +15,10 @@ import net.mamoe.mirai.message.data.*
 import net.mamoe.mirai.utils.ExternalResource
 import net.mamoe.mirai.utils.ExternalResource.Companion.toExternalResource
 import net.mamoe.mirai.utils.ExternalResource.Companion.uploadAsImage
-import net.mamoe.mirai.utils.info
-import top.saucecode.NodeValue.ListValue
-import top.saucecode.NodeValue.NodeValue
-import top.saucecode.NodeValue.toNodeValue
+import top.saucecode.yqlang.*
+import top.saucecode.yqlang.NodeValue.*
 import top.saucecode.Yqbot.reload
+import top.saucecode.yqlang.NodeValue.NodeValue
 import java.awt.image.BufferedImage
 import java.io.File
 import java.util.*
@@ -48,7 +46,7 @@ object YqLang {
     }
 
     class PerGroupStorage(gid: Long) {
-        val path = Yqbot.dataFolderPath.toString() + "/yqlang/$gid"
+        private val path = Yqbot.dataFolderPath.toString() + "/yqlang/$gid"
         fun getPicture(picId: String): ExternalResource? {
             val f = File(path, picId)
             return if (f.exists()) {
@@ -66,19 +64,20 @@ object YqLang {
         }
     }
 
-    class ExecutionManager(private val subject: Contact) {
-        private val id: Long = subject.id
-        private val sendMsg: suspend (MessageChain?) -> Unit = { msg ->
+    class PerGroupExecutionManager(private val subject: Contact) {
+        private val id: Long
+            get() = subject.id
+        private suspend fun sendMsg(msg: MessageChain?) {
             if (msg != null && msg.any { it is PlainText || it is Image }) subject.sendMessage(msg)
         }
-        private val sendNudge: suspend (Long) -> Unit = { target ->
+        private suspend fun sendNudge(target: Long) {
             when (subject) {
                 is Group -> subject[target]?.nudge()?.sendTo(subject)
                 is User -> if (subject.id == target) subject.nudge().sendTo(subject)
             }
         }
-        private val getNickName: (Long) -> String = { target ->
-            when (subject) {
+        private fun getNickName(target: Long): String {
+            return when (subject) {
                 is Group -> subject[target]?.nameCardOrNick
                 is User -> if (subject.id == target) subject.nick else null
                 else -> null
@@ -99,14 +98,12 @@ object YqLang {
                             is Output.PicSend -> {
                                 if (images?.containsKey(output.picId) == true) {
                                     // recent, resend
-                                    Yqbot.logger.info { "resend pic ${output.picId}" }
                                     builder.add(Image(output.picId))
                                 } else {
                                     // read from storage
                                     val image = storage.getPicture(output.picId)?.use {
                                         it.uploadAsImage(subject)
                                     }
-                                    Yqbot.logger.info { "read pic $image" }
                                     image?.let { builder.add(it) }
                                 }
                             }
@@ -133,7 +130,7 @@ object YqLang {
             } }
         }
 
-        private suspend fun runCommand(source: String, images: Map<String, BufferedImage>?, run: Boolean, save: Boolean, firstRun: Boolean) {
+        private suspend fun commandRun(source: String, images: Map<String, BufferedImage>?, run: Boolean, save: Boolean, firstRun: Boolean) {
             try {
                 val st = SymbolTable.createRoot()
                 val ast = try {
@@ -154,7 +151,7 @@ object YqLang {
                 } else null
                 if (run) {
                     val imgList = images?.keys?.map { it.toNodeValue() }?.toNodeValue() ?: ListValue(mutableListOf())
-                    val context = BotContext(st, firstRun, mapOf("images" to imgList), getNickName)
+                    val context = BotContext(st, firstRun, mapOf("images" to imgList), ::getNickName)
                     runProcess(process, 0, context, images, storage)
                 }
             } catch (e: Exception) {
@@ -162,21 +159,21 @@ object YqLang {
             }
         }
 
-        suspend fun eventRunCommand(events: Map<String, NodeValue>, images: Map<String, BufferedImage>?) {
+        suspend fun eventRun(events: Map<String, NodeValue>, images: Map<String, BufferedImage>?) {
             val processes = states[id]
             var index = 0
             coroutineScope { processes?.forEach { process ->
                 index += 1
                 if (process.interpreter != null) {
                     launch {
-                        val context = BotContext(process.symbolTable, false, events, getNickName)
+                        val context = BotContext(process.symbolTable, false, events, ::getNickName)
                         runProcess(process, index, context, images, YqlangStore.programs[id]!![index - 1])
                     }
                 }
             }}
         }
 
-        private suspend fun listCommands(index: Int? = null) {
+        private suspend fun commandList(index: Int? = null) {
             val programs = YqlangStore.programs[id]
             fun retrieve(i: Int, full: Boolean): String {
                 val additionalInfo = if(states[id]?.get(i)?.interpreter == null) "（未能激活）" else ""
@@ -211,7 +208,7 @@ object YqLang {
             }
         }
 
-        private suspend fun updateCommand(index: Int, source: String) {
+        private suspend fun commandUpdate(index: Int, source: String) {
             val programs = YqlangStore.programs[id]
             if (programs?.indices?.contains(index) == true) {
                 val interpreter = try {
@@ -228,7 +225,7 @@ object YqLang {
             }
         }
 
-        private suspend fun removeCommand(index: Int) {
+        private suspend fun commandRemove(index: Int) {
             if(YqlangStore.programs[id]?.indices?.contains(index) == true) {
                 YqlangStore.programs[id]!!.removeAt(index)
                 states[id]!!.removeAt(index)
@@ -249,8 +246,8 @@ object YqLang {
                         if (segments.size == 3) {
                             val source = segments[2]
                             when (predicate) {
-                                "add" -> runCommand(source, images, run = true, save = true, firstRun = true)
-                                "run" -> runCommand(source, images, run = true, save = false, firstRun = true)
+                                "add" -> commandRun(source, images, run = true, save = true, firstRun = true)
+                                "run" -> commandRun(source, images, run = true, save = false, firstRun = true)
                             }
                         } else {
                             sendMsg("语法错误：/yqlang add <源代码> 或 /yqlang run <源代码>。".toMsg())
@@ -258,9 +255,9 @@ object YqLang {
                     }
                     "list" -> {
                         if (segments.size == 2) {
-                            listCommands()
+                            commandList()
                         } else if (segments.size == 3) {
-                            segments[2].toIntOrNull()?.let { listCommands(it) } ?:
+                            segments[2].toIntOrNull()?.let { commandList(it) } ?:
                                 sendMsg("语法错误：/yqlang list <程序编号>。".toMsg())
                         }
                     }
@@ -272,7 +269,7 @@ object YqLang {
                                 val index = indexAndSource[0].toIntOrNull()?.minus(1)
                                 if (index != null) {
                                     val source = indexAndSource[1]
-                                    updateCommand(index, source)
+                                    commandUpdate(index, source)
                                     ok = true
                                 }
                             }
@@ -286,7 +283,7 @@ object YqLang {
                         if (segments.size == 3) {
                             val index = segments[2].toIntOrNull()?.minus(1)
                             if (index != null) {
-                                removeCommand(index)
+                                commandRemove(index)
                                 ok = true
                             }
                         }
@@ -319,7 +316,7 @@ object YqLang {
                 """.trimIndent() + "\n" + helpMessage).toMsg())
             } else {
                 // a message
-                eventRunCommand(mapOf(
+                eventRun(mapOf(
                     "text" to rawText.toNodeValue(),
                     "sender" to sender.toNodeValue(),
                     "images" to images.keys.map { it.toNodeValue() }.toNodeValue()
@@ -357,13 +354,13 @@ object YqLang {
 
     fun load() {
         YqlangStore.reload()
-        ExecutionManager.loadPrograms()
+        PerGroupExecutionManager.loadPrograms()
         Yqbot.registerImageLoadedMessageListener { images ->
-            ExecutionManager(subject).respondToMessageEvent(message.contentToString(), sender.id, images)
+            PerGroupExecutionManager(subject).respondToMessageEvent(message.contentToString(), sender.id, images)
         }
         GlobalEventChannel.parentScope(Yqbot).subscribeAlways<NudgeEvent> {
             if (target is Bot) {
-                ExecutionManager(subject).eventRunCommand(mapOf("nudged" to from.id.toNodeValue()), null)
+                PerGroupExecutionManager(subject).eventRun(mapOf("nudged" to from.id.toNodeValue()), null)
             }
         }
 
@@ -374,7 +371,7 @@ object YqLang {
                     for (gid in states.keys) {
                         Yqbot.launch {
                             val subject: Contact? = bot.getGroup(gid) ?: bot.getFriend(gid)
-                            subject?.let { ExecutionManager(it) }?.eventRunCommand(mapOf("clock" to now.toNodeValue()), null)
+                            subject?.let { PerGroupExecutionManager(it) }?.eventRun(mapOf("clock" to now.toNodeValue()), null)
                         }
                     }
                 }
