@@ -86,8 +86,8 @@ object SglManager {
             messageChains.forEach { chain -> chain.forEach chainForeach@{
                 if ((it !is Image) || it.isEmoji) return@chainForeach
                 imgCnt += 1
-                Yqbot.logger.debug("In total ${bufferedImages.size} buffered images. They are: ${bufferedImages.keys.joinToString(", ")}. Now processing image ${it.imageId}")
-                val hash = bufferedImages[it.imageId]!!.dctHash()
+                Yqbot.logger.debug("In total ${bufferedImages.size} buffered images. They are: ${bufferedImages.joinToString(", ") { it.first }}. Now processing image ${it.imageId}")
+                val hash = bufferedImages.first { pair -> pair.first == it.imageId }.second.dctHash()
                 val q = SglDatabase.query(subject.id, hash)
                 if (q != null) {
                     // sgl

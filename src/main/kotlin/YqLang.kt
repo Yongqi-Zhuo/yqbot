@@ -18,33 +18,32 @@ import net.mamoe.mirai.utils.ExternalResource
 import net.mamoe.mirai.utils.ExternalResource.Companion.toExternalResource
 import net.mamoe.mirai.utils.ExternalResource.Companion.uploadAsImage
 import top.saucecode.yqlang.*
-import top.saucecode.yqlang.NodeValue.*
 import top.saucecode.Yqbot.reload
+import top.saucecode.yqlang.Runtime.Memory
 import java.awt.image.BufferedImage
 import java.io.File
 import java.util.*
 import javax.imageio.ImageIO
-import kotlin.coroutines.CoroutineContext
 
 object YqLang {
 
     @kotlinx.serialization.Serializable
     data class Storage(
         var source: String,
-        var symbolTable: String
+        var memory: String
         )
 
     private object YqlangStore: AutoSavePluginData("YqLang") {
         val programs: MutableMap<Long, MutableList<Storage>> by value(mutableMapOf())
     }
 
-    data class Process(val interpreter: RestrictedInterpreter?, val symbolTable: SymbolTable)
+    data class Process(val interpreter: RestrictedContainer?)
 
     private val states: MutableMap<Long, MutableList<Process>> = mutableMapOf()
 
     private var clockTask: TimerTask? = null
 
-    class BotContext(scope: Scope, firstRun: Boolean, events: Map<String, NodeValue>, private val getNickName: (Long) -> String): ControlledContext(scope, firstRun, events) {
+    class BotContext(firstRun: Boolean, events: List<Event>, private val getNickName: (Long) -> String): ControlledContext(firstRun, events) {
         override fun nickname(id: Long): String {
             return getNickName(id)
         }
@@ -93,7 +92,7 @@ object YqLang {
 
         private fun String.toMsg(): MessageChain? = if (this.isNotEmpty()) this.toPlainText().toMessageChain() else null
 
-        private suspend fun runProcess(process: Process, pid: Int, context: ControlledContext, images: Map<String, BufferedImage>?, save: Storage? = null) {
+        private suspend fun runProcess(process: Process, pid: Int, context: ControlledContext, images: List<Pair<String, BufferedImage>>?, save: Storage? = null) {
             if (process.interpreter == null) return
             coroutineScope {
                 process.interpreter.run(context).catch { e ->
@@ -111,7 +110,7 @@ object YqLang {
                                 lastIsText = true
                             }
                             is Output.PicSend -> {
-                                if (images?.containsKey(output.picId) == true) {
+                                if (images?.any { it.first == output.picId } == true) {
                                     // recent, resend
                                     builder.add(Image(output.picId))
                                 } else {
@@ -124,7 +123,8 @@ object YqLang {
                                 lastIsText = false
                             }
                             is Output.PicSave -> {
-                                images?.get(output.picId)?.let { storage.savePicture(output.picId, it) }
+                                images?.firstOrNull { it.first == output.picId }
+                                    ?.let { storage.savePicture(output.picId, it.second) }
                             }
                             is Output.Nudge -> {
                                 launch {
@@ -139,33 +139,31 @@ object YqLang {
                     }
                 }
                 if (save != null) {
-                    save.symbolTable = process.symbolTable.serialize()
+                    save.memory = process.interpreter.memory.serialize()
                 }
             }
         }
 
-        private suspend fun commandRun(source: String, images: Map<String, BufferedImage>?, run: Boolean, save: Boolean, firstRun: Boolean) {
+        private suspend fun commandRun(source: String, images: List<Pair<String, BufferedImage>>?, run: Boolean, save: Boolean, firstRun: Boolean) {
             try {
-                val st = SymbolTable.createRoot()
                 val ast = try {
-                    val interpreter = RestrictedInterpreter(source)
-                    interpreter
+                    RestrictedContainer(source, null)
                 } catch (e: Exception) {
                     sendMsg("程序编译失败${e.javaClass}，参考原因：${e.message}。".toMsg())
                     return
                 }
-                val process = Process(ast, st)
+                val process = Process(ast)
                 val storage = if (save) {
                     if (YqlangStore.programs[id] == null) YqlangStore.programs[id] = mutableListOf()
                     if (states[id] == null) states[id] = mutableListOf()
-                    val tmpStorage = Storage(source, st.serialize())
+                    val tmpStorage = Storage(source, ast.memory.serialize())
                     YqlangStore.programs[id]!!.add(tmpStorage)
                     states[id]!!.add(process)
                     tmpStorage
                 } else null
                 if (run) {
-                    val imgList = images?.keys?.map { it.toNodeValue() }?.toNodeValue() ?: ListValue(mutableListOf())
-                    val context = BotContext(st, firstRun, mapOf("images" to imgList), ::getNickName)
+                    val imgList = images?.map { it.first }?.let { ImagesEvent(it) } ?: ImagesEvent(emptyList())
+                    val context = BotContext(firstRun, listOf(imgList), ::getNickName)
                     runProcess(process, 0, context, images, storage)
                 }
             } catch (e: Exception) {
@@ -173,12 +171,12 @@ object YqLang {
             }
         }
 
-        suspend fun eventRun(events: Map<String, NodeValue>, images: Map<String, BufferedImage>?) {
+        suspend fun eventRun(events: List<Event>, images: List<Pair<String, BufferedImage>>?) {
             val processes = states[id]
             coroutineScope { processes?.forEachIndexed { index, process ->
                 if (process.interpreter != null) {
                     launch {
-                        val context = BotContext(process.symbolTable, false, events, ::getNickName)
+                        val context = BotContext(false, events, ::getNickName)
                         runProcess(process, index + 1, context, images, YqlangStore.programs[id]!![index])
                     }
                 }
@@ -196,13 +194,13 @@ object YqLang {
                     val croppedLines = lines.size - limit
                     lines.take(limit).joinToString("\n") + if(croppedLines > 0) "\n...（省略${croppedLines}行）" else ""
                 }
-                val originalVariables = states[id]!![i].symbolTable.displaySymbols()
+                val originalVariables = states[id]!![i].interpreter?.memory?.memoryDump() ?: "null" // TODO: display symbols
                 val variables = if (full) originalVariables else {
                     val limit = 50
                     val croppedVariables = originalVariables.length - limit
                     originalVariables.take(limit) + if(croppedVariables > 0) " ...（省略${croppedVariables}个字符）" else ""
                 }
-                return "第${i + 1}个程序：$additionalInfo\n源代码：$source\n全局变量：$variables\n\n"
+                return "第${i + 1}个程序：$additionalInfo\n源代码：$source\n内存：$variables\n\n"
             }
             if(programs == null) {
                 sendMsg("还没有程序。".toMsg())
@@ -228,14 +226,15 @@ object YqLang {
             val programs = YqlangStore.programs[id]
             if (programs?.indices?.contains(index) == true) {
                 val interpreter = try {
-                    RestrictedInterpreter(source)
+                    RestrictedContainer(source, Memory.deserialize(programs[index].memory))
                 } catch (e: Exception) {
                     sendMsg("程序编译失败${e.javaClass}，参考原因：${e.message}。".toMsg())
                     return
                 }
+                programs[index].memory = interpreter.memory.serialize()
                 programs[index].source = source
                 states[id]!![index].interpreter?.cancelAllRunningTasks()
-                states[id]!![index] = Process(interpreter, states[id]!![index].symbolTable)
+                states[id]!![index] = Process(interpreter)
                 sendMsg("程序${index + 1}更新成功。".toMsg())
             } else {
                 sendMsg("没有找到这个程序。".toMsg())
@@ -252,7 +251,7 @@ object YqLang {
             }
         }
 
-        suspend fun respondToMessageEvent(rawText: String, sender: Long, images: Map<String, BufferedImage>) {
+        suspend fun respondToMessageEvent(rawText: String, sender: Long, images: List<Pair<String, BufferedImage>>) {
             val segments = rawText.trim().split(Utility.whitespace, limit = 3)
             if (segments.size >= 2 &&
                 segments[0] == "/yqlang"
@@ -328,15 +327,16 @@ object YqLang {
                 segments[0] == "/yqlang" ) {
                 sendMsg(("""
                     yqlang是yqbot的一个简单的脚本语言，可以用来编写脚本实现特定的功能。语言手册可以在群文件中找到。
+                    目前yqlang已经在GitHub上开源。详见https://github.com/Yongqi-Zhuo/yqlang。
                     程序可以只执行一次（/yqlang run），也可以设置为在事件发生时被调用（/yqlang add）。
                     支持的指令如下：
                 """.trimIndent() + "\n" + helpMessage).toMsg())
             } else {
                 // a message
-                eventRun(mapOf(
-                    "text" to rawText.toNodeValue(),
-                    "sender" to sender.toNodeValue(),
-                    "images" to images.keys.map { it.toNodeValue() }.toNodeValue()
+                eventRun(listOf(
+                    TextEvent(rawText),
+                    SenderEvent(sender),
+                    ImagesEvent(images.map { it.first })
                 ), images)
             }
         }
@@ -359,12 +359,14 @@ object YqLang {
                             val gprocesses = gstorage.mapTo(mutableListOf()) { storage ->
                                 async {
                                     val interpreter = try {
-                                        RestrictedInterpreter(storage.source)
+                                        RestrictedContainer(storage.source, Memory.deserialize(storage.memory))
                                     } catch (e: Exception) {
                                         null
                                     }
-                                    val st = SymbolTable.deserialize(storage.symbolTable)
-                                    Process(interpreter, st)
+                                    if (interpreter != null) {
+                                        storage.memory = interpreter.memory.serialize()
+                                    }
+                                    Process(interpreter)
                                 }
                             }.awaitAll().toMutableList()
                             Pair(gid, gprocesses)
@@ -383,7 +385,7 @@ object YqLang {
         }
         GlobalEventChannel.parentScope(Yqbot).subscribeAlways<NudgeEvent> {
             if (target is Bot) {
-                PerGroupExecutionManager(subject).eventRun(mapOf("nudged" to from.id.toNodeValue()), null)
+                PerGroupExecutionManager(subject).eventRun(listOf(NudgedEvent(from.id)), null)
             }
         }
 
@@ -396,7 +398,7 @@ object YqLang {
                             val subject: Contact? = bot.getGroup(gid) ?: bot.getFriend(gid)
                             async {
                                 subject?.let { PerGroupExecutionManager(it) }?.eventRun(
-                                    mapOf("clock" to now.toNodeValue()), null
+                                    listOf(ClockEvent(now)), null
                                 )
                             }
                         }.awaitAll()

@@ -15,7 +15,7 @@ repositories {
 }
 
 dependencies {
-    implementation(files("../yqlang/build/libs/yqlang-1.0.jar"))
+    implementation(files("libs/yqlang-1.0.jar"))
     implementation("org.xerial:sqlite-jdbc:3.32.3.2")
     implementation("io.socket:socket.io-client:2.0.1")
 }

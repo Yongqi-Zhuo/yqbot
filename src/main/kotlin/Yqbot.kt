@@ -1,8 +1,6 @@
 package top.saucecode
 
 import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.asFlow
-import kotlinx.coroutines.flow.map
 import net.mamoe.mirai.console.command.CommandManager.INSTANCE.register
 import net.mamoe.mirai.console.command.CommandManager.INSTANCE.unregister
 import net.mamoe.mirai.console.data.AutoSavePluginConfig
@@ -36,7 +34,7 @@ object Yqbot : KotlinPlugin(
         PermissionService.INSTANCE.register(permissionId("admin"), "管理yqbot的权限")
     }
 
-    val messageListeners: MutableList<suspend MessageEvent.(Map<String, BufferedImage>) -> Unit> = mutableListOf()
+    val messageListeners: MutableList<suspend MessageEvent.(List<Pair<String, BufferedImage>>) -> Unit> = mutableListOf()
 
     override fun onEnable() {
         adminPermission
@@ -75,7 +73,7 @@ object Yqbot : KotlinPlugin(
                         Pair(image.imageId, ImageIO.read(URL(image.queryUrl())))
                     }
                 }
-            }.awaitAll().toMap()
+            }.awaitAll()
             messageListeners.map {
                 async { it(messageEvent, images) }
             }.awaitAll()
@@ -83,7 +81,7 @@ object Yqbot : KotlinPlugin(
         logger.info { "Loaded yqbot." }
     }
 
-    fun registerImageLoadedMessageListener(listener: suspend MessageEvent.(Map<String, BufferedImage>) -> Unit) {
+    fun registerImageLoadedMessageListener(listener: suspend MessageEvent.(List<Pair<String, BufferedImage>>) -> Unit) {
         messageListeners.add(listener)
     }
 
